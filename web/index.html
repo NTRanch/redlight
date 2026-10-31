@@ -1,27 +1,578 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Redlight — Nice Thoughts Ranch</title>
+<title>Redlight — a recorded rite in her studio (18+)</title>
 <style>
-  body { background:#0d0208; color:#f7e8f1; font-family: system-ui, sans-serif; margin:0; }
-  main { max-width: 880px; margin: 0 auto; padding: 24px; }
-  h1 { color:#ff2e88; }
-  .gate { border:1px solid #ff2e88; padding:16px; border-radius:8px; }
+  html, body { margin: 0; padding: 0; background: #0d0208; color: #eaeaea;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+  main { min-height: 100vh; display: flex; flex-direction: column;
+    align-items: center; justify-content: center; gap: 12px; padding: 16px;
+    box-sizing: border-box; }
+  canvas { width: min(92vmin, 720px); height: min(92vmin, 720px);
+    background: #0d0208; border: 1px solid #540e46; touch-action: manipulation; }
+  p { margin: 0; font-size: 13px; color: #ac9393; text-align: center;
+    max-width: 720px; line-height: 1.5; }
+  .pink { color: #ff2e88; }
 </style>
 </head>
 <body>
 <main>
-  <img src="../assets/brand/header.png" alt="Redlight" style="width:100%;height:auto">
-  <h1>Redlight</h1>
-  <div class="gate">
-    <p><strong>18+ only.</strong> This is an adult game by Nice Thoughts Ranch.
-    Content warnings and the full screen set (Title / Pause / How to Play /
-    Gameplay / Settings / Game Over-or-Victory) land with the week's build;
-    this shell is the scaffold placeholder for the single-file delivery.</p>
-  </div>
-  <!-- Preflight: the C# / Unity core inlines here (single-file rule). -->
+  <canvas id="game" width="960" height="960"></canvas>
+  <p><span class="pink">REDLIGHT</span> — 18+ only. Lux, on the record.
+  The lens watches and attention decays: pose with a tap, answer a flash
+  with ENTER, and let her lines answer every event the room fires.
+  Sound is generated live and only ever answers your own input.</p>
+  <p id="records"></p>
 </main>
+<script type="module">
+// game.mjs — Redlight JS realization of the C# core (the engine-week
+// seam: Unity lives on primo; the shipped page runs this transliteration
+// and conformance/vectors.json, dumped FROM the C# core, locks the two
+// together exactly — see tools/conformance.mjs). Shared by the shipped
+// page (inlined by tools/assemble.mjs) and the node harnesses.
+// Every constant, table, and branch mirrors core/Redlight.Core/Core.cs.
+
+const PALETTE = [
+  "#0d0208", "#ff2e88", "#f8f0ed", "#ac9393", "#540e46",
+  "#ec8584", "#eaeaea", "#68636c", "#ffd166", "#1a0510",
+];
+
+const INPUT = { tap: 1, confirm: 2, back: 4, pause: 8, up: 16, down: 32, left: 64, right: 128 };
+
+const LINES = [
+  [
+    "Yes - hear that? All for me.",
+    "Louder. I bloom under noise.",
+    "That sound keeps me warm.",
+    "Clap again - watch me glow.",
+    "Your hands say what eyes mean.",
+    "More. I am not shy tonight.",
+  ],
+  [
+    "Caught. Keep the picture.",
+    "The flash loves me back.",
+    "Freeze me like that - yes.",
+    "One more. I dare the lens.",
+    "Bright. I do not blink.",
+    "Print that one in red.",
+  ],
+  [
+    "Say it slower. I keep praise.",
+    "Kind words raise my floor.",
+    "Tell me again - I collect.",
+    "Praise looks good on me.",
+    "Your voice, my favourite light.",
+    "Mm. Known, and glad of it.",
+  ],
+];
+
+const ARCHIVE_STUBS = [
+  "ink: 'watch me' - wrist (stub)",
+  "ink: 'known' - collarbone (stub)",
+  "ink: 'again' - hip (stub)",
+  "ink: 'yours, the lens' - ankle (stub)",
+];
+
+const LEVELS = [
+  { duration: 2700, decay100: 30, eventBase: 260, eventVar: 160, target: 420, name: "SOLO RECORD" },
+  { duration: 3300, decay100: 38, eventBase: 210, eventVar: 140, target: 480, name: "LIVE SMALL" },
+  { duration: 3900, decay100: 46, eventBase: 170, eventVar: 120, target: 540, name: "LIVE FULL" },
+];
+
+const ATT_MAX = 1000;
+const FLOOR_MAX = 500;
+const DARK_LIMIT = 150;
+const FLASH_WINDOW = 36;
+const POSE_CD = 30;
+const POSE_GAIN = 55;
+
+function stageName(s) { return s === 0 ? "GLIMPSED" : s === 1 ? "SEEN" : "KNOWN"; }
+
+function createCore(seedInit, levelInit, demoInit) {
+  const S = {
+    archiveBestStage: 0, archiveSessions: 0, attention: 420, darkSteps: 0,
+    decayAcc: 0, demo: !!demoInit, demoTick: 0, distinct: 0, elapsed: 0,
+    events: 0, flashWindow: 0, floor: 0, heard: null, knownStage: 0,
+    lastHeard: "", lastLine: [-1, -1, -1], lensHits: 0, level: levelInit,
+    menuCursor: 0, nextEvent: 0, paceQuick: false, perClass: [0, 0, 0],
+    poseCd: 0, rngState: 1, screen: 0, seed: seedInit >>> 0,
+    settingsCursor: 0, textLarge: false,
+  };
+
+  function rngNext() {
+    let x = S.rngState >>> 0;
+    x ^= (x << 13) >>> 0; x >>>= 0;
+    x ^= x >>> 17;
+    x ^= (x << 5) >>> 0; x >>>= 0;
+    S.rngState = x >>> 0;
+    return S.rngState;
+  }
+  function below(bound) { return rngNext() % bound; }
+  function seedRng(seed) { S.rngState = (seed >>> 0) === 0 ? 0x9E3779B9 : seed >>> 0; }
+
+  function resetSession() {
+    S.attention = 420; S.darkSteps = 0; S.decayAcc = 0; S.distinct = 0;
+    S.elapsed = 0; S.events = 0; S.flashWindow = 0; S.floor = 0;
+    S.knownStage = 0; S.lastHeard = ""; S.lensHits = 0;
+    S.nextEvent = 180 + below(180);
+    S.poseCd = 0;
+    S.lastLine = [-1, -1, -1]; S.perClass = [0, 0, 0];
+    S.heard = Array.from({ length: 3 }, () => [false, false, false, false, false, false]);
+  }
+
+  function startLevel(level) {
+    if (level < 0 || level >= 3) return 1;
+    S.level = level;
+    seedRng((S.seed + level * 7919) >>> 0);
+    resetSession();
+    return 0;
+  }
+
+  function pickLine(cls) {
+    let line = below(6);
+    if (line === S.lastLine[cls]) line = (line + 1 + below(5)) % 6;
+    S.lastLine[cls] = line;
+    if (!S.heard[cls][line]) { S.heard[cls][line] = true; S.distinct++; }
+    return line;
+  }
+
+  function fireEvent(def) {
+    const cls = below(3);
+    const line = pickLine(cls);
+    S.events++;
+    S.perClass[cls]++;
+    S.lastHeard = LINES[cls][line];
+    S.nextEvent = S.elapsed + def.eventBase + below(def.eventVar);
+    if (cls === 0) { S.attention = Math.min(ATT_MAX, S.attention + 70); return 2; }
+    if (cls === 1) { S.flashWindow = FLASH_WINDOW; return 3; }
+    S.floor = Math.min(FLOOR_MAX, S.floor + 50);
+    S.attention = Math.min(ATT_MAX, S.attention + 35);
+    return 4;
+  }
+
+  function updateKnown(duration) {
+    let known = Math.floor(S.elapsed * 500 / Math.max(1, duration)) + S.distinct * 28 + S.lensHits * 22;
+    if (known > 1000) known = 1000;
+    S.knownStage = known < 340 ? 0 : known < 680 ? 1 : 2;
+  }
+
+  function demoBits() {
+    S.demoTick++;
+    if (S.screen === 0 && S.demoTick >= 20) { S.demoTick = 0; return INPUT.confirm; }
+    if (S.screen === 1 && S.demoTick >= 20) { S.demoTick = 0; return INPUT.confirm; }
+    if (S.screen === 3) {
+      let bits = 0;
+      if (S.flashWindow > 0) bits |= INPUT.confirm;
+      if (S.poseCd === 0 && S.attention < 880) bits |= INPUT.tap;
+      return bits;
+    }
+    return 0;
+  }
+
+  function stepTitle(bits) {
+    if (bits & INPUT.up) S.menuCursor = (S.menuCursor + 2) % 3;
+    if (bits & INPUT.down) S.menuCursor = (S.menuCursor + 1) % 3;
+    if (S.menuCursor === 0) {
+      if (bits & INPUT.left) S.level = (S.level + 2) % 3;
+      if (bits & INPUT.right) S.level = (S.level + 1) % 3;
+    }
+    if (!(bits & (INPUT.confirm | INPUT.tap))) return 0;
+    if (S.menuCursor === 1) { S.screen = 2; return 8; }
+    if (S.menuCursor === 2) { S.screen = 5; return 8; }
+    startLevel(S.level);
+    S.screen = 3;
+    return 8;
+  }
+
+  function stepSettings(bits) {
+    if (bits & INPUT.up) S.settingsCursor = (S.settingsCursor + 2) % 3;
+    if (bits & INPUT.down) S.settingsCursor = (S.settingsCursor + 1) % 3;
+    if (bits & INPUT.back) { S.screen = 1; return 8; }
+    if (!(bits & (INPUT.confirm | INPUT.tap))) return 0;
+    if (S.settingsCursor === 0) S.paceQuick = !S.paceQuick;
+    else if (S.settingsCursor === 1) S.textLarge = !S.textLarge;
+    else { S.screen = 1; return 8; }
+    return 8;
+  }
+
+  function stepPlay(bits) {
+    if (bits & INPUT.pause) { S.screen = 4; return 0; }
+    const def = LEVELS[S.level];
+    const duration = S.paceQuick ? Math.floor(def.duration * 3 / 4) : def.duration;
+    let eventCode = 0;
+    if (S.poseCd > 0) S.poseCd--;
+    if ((bits & INPUT.tap) && S.poseCd === 0) {
+      S.attention = Math.min(ATT_MAX, S.attention + POSE_GAIN);
+      S.poseCd = POSE_CD;
+      eventCode = 1;
+    }
+    if (S.flashWindow > 0) {
+      if (bits & INPUT.confirm) {
+        S.flashWindow = 0;
+        S.lensHits++;
+        S.attention = Math.min(ATT_MAX, S.attention + 95);
+        eventCode = 5;
+      } else {
+        S.flashWindow--;
+      }
+    }
+    S.elapsed++;
+    if (S.elapsed >= S.nextEvent) eventCode = fireEvent(def);
+    S.decayAcc += def.decay100;
+    const decay = Math.floor(S.decayAcc / 100);
+    S.decayAcc %= 100;
+    if (decay > 0 && S.attention > S.floor) {
+      S.attention = Math.max(S.floor, S.attention - decay);
+    }
+    if (S.attention <= 0) S.darkSteps++; else S.darkSteps = 0;
+    updateKnown(duration);
+    if (S.darkSteps >= DARK_LIMIT) { S.screen = 7; return 7; }
+    if (S.elapsed >= duration) {
+      if (S.attention >= def.target) { S.screen = 6; return 6; }
+      S.screen = 7;
+      return 7;
+    }
+    return eventCode;
+  }
+
+  function step(inputBits) {
+    let bits = (inputBits >>> 0) & 0xFF;
+    if (S.demo) bits |= demoBits();
+    switch (S.screen) {
+      case 0:
+        if (bits & (INPUT.confirm | INPUT.tap)) S.screen = 1;
+        return 0;
+      case 1: return stepTitle(bits);
+      case 2:
+        if (bits & (INPUT.back | INPUT.confirm)) S.screen = 1;
+        return 0;
+      case 5: return stepSettings(bits);
+      case 4:
+        if (bits & (INPUT.confirm | INPUT.back | INPUT.pause | INPUT.tap)) S.screen = 3;
+        return 0;
+      case 6:
+      case 7:
+        if (bits & (INPUT.confirm | INPUT.tap)) S.screen = 1;
+        return 0;
+      default: return stepPlay(bits);
+    }
+  }
+
+  function draw() {
+    const ops = [];
+    const R = (x, y, w, h, c) => ops.push(`r ${x} ${y} ${w} ${h} ${c}`);
+    const C = (x, y, r, c) => ops.push(`c ${x} ${y} ${r} ${c}`);
+    const L = (x1, y1, x2, y2, w, c) => ops.push(`l ${x1} ${y1} ${x2} ${y2} ${w} ${c}`);
+    const T = (x, y, size, c, s) => ops.push(`t ${x} ${y} ${size} ${c} ${s}`);
+    const boost = S.textLarge ? 2 : 0;
+    R(0, 0, 960, 960, 0);
+    R(24, 24, 912, 912, 9);
+    R(32, 32, 896, 896, 0);
+    if (S.screen === 0) {
+      T(336, 300, 40, 1, "REDLIGHT");
+      T(252, 380, 20, 2, "A RECORDED RITE IN HER STUDIO");
+      T(192, 440, 16, 3, "18+ ONLY. ADULTS ONLY BEYOND THIS GATE.");
+      T(216, 476, 16, 3, "CONTAINS EXHIBITIONISM AND PRAISE PLAY.");
+      T(264, 560, 18, 8, "PRESS ENTER OR TAP TO CONFIRM 18+");
+    } else if (S.screen === 1) {
+      T(336, 180, 40, 1, "REDLIGHT");
+      T(300, 250, 18, 3, "LUX, ON THE RECORD");
+      T(240, 340, 20, S.menuCursor === 0 ? 1 : 2, (S.menuCursor === 0 ? "> " : "  ") + "START - " + LEVELS[S.level].name);
+      T(240, 396, 20, S.menuCursor === 1 ? 1 : 2, (S.menuCursor === 1 ? "> " : "  ") + "HOW TO PLAY");
+      T(240, 452, 20, S.menuCursor === 2 ? 1 : 2, (S.menuCursor === 2 ? "> " : "  ") + "SETTINGS");
+      T(240, 540, 16, 3, "LEFT/RIGHT PICKS THE AUDIENCE ON START.");
+      T(240, 572, 16, 3, "RECORD: " + S.archiveSessions + " SESSIONS, BEST " + stageName(S.archiveBestStage));
+    } else if (S.screen === 2) {
+      T(240, 160, 28, 1, "HOW TO PLAY");
+      T(120, 240, 16 + boost, 2, "THE LENS WATCHES. ATTENTION ALWAYS DECAYS.");
+      T(120, 280, 16 + boost, 2, "TAP OR SPACE: POSE. POSE RAISES ATTENTION.");
+      T(120, 320, 16 + boost, 2, "WHEN A FLASH FIRES, ANSWER WITH ENTER");
+      T(120, 360, 16 + boost, 2, "BEFORE ITS RING CLOSES: THE LENS PAYS.");
+      T(120, 400, 16 + boost, 2, "COMPLIMENTS RAISE THE FLOOR UNDER YOU.");
+      T(120, 440, 16 + boost, 2, "APPLAUSE FEEDS THE ROOM. HER LINES ANSWER");
+      T(120, 480, 16 + boost, 2, "EVERY EVENT. END SEEN, END ABOVE TARGET.");
+      T(120, 560, 16, 3, "P PAUSES. BACKSPACE RETURNS.");
+      T(120, 620, 18, 8, "ENTER OR BACKSPACE TO RETURN");
+    } else if (S.screen === 5) {
+      T(300, 180, 28, 1, "SETTINGS");
+      T(240, 300, 20, S.settingsCursor === 0 ? 1 : 2, (S.settingsCursor === 0 ? "> " : "  ") + "PACE: " + (S.paceQuick ? "QUICK" : "FULL"));
+      T(240, 356, 20, S.settingsCursor === 1 ? 1 : 2, (S.settingsCursor === 1 ? "> " : "  ") + "TEXT: " + (S.textLarge ? "LARGE" : "STD"));
+      T(240, 412, 20, S.settingsCursor === 2 ? 1 : 2, (S.settingsCursor === 2 ? "> " : "  ") + "BACK");
+      T(240, 500, 16, 3, "SETTINGS ARE NEVER GATED BY PROGRESS.");
+      T(240, 532, 16, 3, "SAVES ON WEB ARE BEST-EFFORT (INDEXEDDB).");
+    } else if (S.screen === 3 || S.screen === 4) {
+      const def = LEVELS[S.level];
+      const duration = S.paceQuick ? Math.floor(def.duration * 3 / 4) : def.duration;
+      C(480, 420, 150, 4);
+      C(480, 420, 118, 1);
+      C(480, 396, 44, 2);
+      C(462, 384, 9, 0);
+      C(498, 384, 9, 0);
+      L(380, 560, 580, 560, 6, 5);
+      C(852, 96, 16, 1);
+      T(760, 72, 16, 3, "REC");
+      T(64, 64, 20, 1, "REDLIGHT - " + def.name);
+      R(64, 800, 832, 28, 9);
+      R(64, 800, Math.floor(S.attention * 832 / 1000), 28, 1);
+      R(64 + Math.floor(S.floor * 832 / 1000), 792, 4, 44, 8);
+      R(64 + Math.floor(def.target * 832 / 1000), 792, 4, 44, 2);
+      T(64, 844, 16, 2, "ATTENTION " + S.attention + " FLOOR " + S.floor + " TARGET " + def.target);
+      R(64, 120, 832, 10, 9);
+      R(64, 120, Math.min(832, Math.floor(S.elapsed * 832 / Math.max(1, duration))), 10, 5);
+      T(64, 142, 16, 3, "REVELATION: " + stageName(S.knownStage) + " - LINES " + S.distinct + "/18");
+      if (S.flashWindow > 0) {
+        C(480, 420, 168, 8);
+        T(336, 640, 18, 8, "FLASH! ANSWER WITH ENTER");
+      }
+      if (S.lastHeard.length > 0) T(144, 700, 16 + boost, 6, "LUX: " + S.lastHeard);
+      if (S.poseCd > 0) T(64, 640, 16, 7, "POSE RECOVERING");
+      if (S.screen === 4) {
+        R(280, 400, 400, 140, 9);
+        T(408, 440, 28, 1, "PAUSED");
+        T(340, 496, 16, 2, "ENTER RESUMES. THE LENS WAITS.");
+      }
+    } else if (S.screen === 6) {
+      T(336, 170, 32, 1, "ON RECORD");
+      T(240, 250, 18, 2, "THE WRITTEN RECORD - " + LEVELS[S.level].name);
+      T(240, 310, 16 + boost, 2, "ATTENTION " + S.attention + " / TARGET " + LEVELS[S.level].target);
+      T(240, 344, 16 + boost, 2, "EVENTS " + S.events + " - LINES HEARD " + S.distinct + " OF 18");
+      T(240, 378, 16 + boost, 2, "APPLAUSE " + S.perClass[0] + " FLASH " + S.perClass[1] + " PRAISE " + S.perClass[2]);
+      T(240, 412, 16 + boost, 2, "LENS ANSWERS " + S.lensHits + " - REVELATION: " + stageName(S.knownStage));
+      T(240, 470, 16, 8, "BODY-WRITING ARCHIVE (STUB):");
+      T(240, 504, 16, 5, ARCHIVE_STUBS[S.seed % 4]);
+      T(240, 538, 16, 5, ARCHIVE_STUBS[(S.seed + 2) % 4]);
+      T(240, 620, 18, 8, "ENTER RETURNS TO TITLE");
+    } else {
+      T(312, 220, 32, 5, "DARK ROOM");
+      T(240, 300, 18, 2, "THE ATTENTION DIED. THE RECORD KEEPS:");
+      T(240, 356, 16 + boost, 2, "EVENTS " + S.events + " - LINES HEARD " + S.distinct + " OF 18");
+      T(240, 390, 16 + boost, 2, "REVELATION REACHED: " + stageName(S.knownStage));
+      T(240, 470, 18, 8, "ENTER RETURNS TO TITLE");
+    }
+    return ops.join("\n") + "\n";
+  }
+
+  seedRng(S.seed);
+  resetSession();
+
+  return {
+    state: S,
+    startLevel,
+    step,
+    draw,
+    screen: () => S.screen,
+    levelIdx: () => S.level,
+    attention: () => S.attention,
+    floor: () => S.floor,
+    eventsFired: () => S.events,
+    distinctCount: () => S.distinct,
+    lensHits: () => S.lensHits,
+    knownStage: () => S.knownStage,
+    elapsed: () => S.elapsed,
+    lastLineEncoded: () => (S.lastLine[0] + 1) * 49 + (S.lastLine[1] + 1) * 7 + (S.lastLine[2] + 1),
+    applySettings(paceQuick, textLarge) { S.paceQuick = !!paceQuick; S.textLarge = !!textLarge; },
+    settingsBits: () => (S.paceQuick ? 1 : 0) | (S.textLarge ? 2 : 0),
+    applyArchive(sessions, bestStage) {
+      S.archiveSessions = Math.max(0, Math.min(999, sessions | 0));
+      S.archiveBestStage = Math.max(0, Math.min(2, bestStage | 0));
+    },
+    archiveSessions: () => S.archiveSessions,
+    archiveBestStage: () => S.archiveBestStage,
+  };
+}
+
+async function createGame(_ignored, { seed = 1, level = 0, demo = false } = {}) {
+  if (level < 0 || level >= 3) throw new Error(`core init rejected level ${level}`);
+  const core = createCore(seed >>> 0, level, demo);
+  let lastEvent = 0;
+  return {
+    core,
+    startLevel(l) {
+      const s = core.startLevel(l);
+      if (s !== 0) throw new Error(`core start_level rejected ${l}`);
+    },
+    step(bits) { lastEvent = core.step(bits >>> 0); },
+    screen: () => core.screen(),
+    levelIdx: () => core.levelIdx(),
+    applySettings: (a, b) => core.applySettings(a, b),
+    settingsBits: () => core.settingsBits(),
+    applyArchive: (a, b) => core.applyArchive(a, b),
+    archiveSessions: () => core.archiveSessions(),
+    archiveBestStage: () => core.archiveBestStage(),
+    knownStage: () => core.knownStage(),
+    distinctCount: () => core.distinctCount(),
+    event: () => lastEvent,
+    frameText: () => core.draw(),
+    frame() { return { palette: PALETTE, ops: parseDrawList(this.frameText()) }; },
+  };
+}
+
+function parseDrawList(text) {
+  const ops = [];
+  for (const line of text.split("\n")) {
+    if (!line) continue;
+    const kind = line[0];
+    if (kind === "t") {
+      const parts = line.split(" ");
+      ops.push(["t", +parts[1], +parts[2], +parts[3], +parts[4], parts.slice(5).join(" ")]);
+    } else {
+      const parts = line.split(" ").map(Number);
+      ops.push([kind, ...parts.slice(1)]);
+    }
+  }
+  return ops;
+}
+
+
+const params = new URLSearchParams(location.search);
+const demoLevel = params.has("demo") ? Number(params.get("demo")) : null;
+const seed = params.has("seed") ? Number(params.get("seed")) : 20264;
+
+const canvas = document.getElementById("game");
+const ctx = canvas.getContext("2d");
+
+const game = await createGame(null, {
+  seed,
+  level: demoLevel ?? 0,
+  demo: demoLevel !== null,
+});
+if (demoLevel !== null) game.startLevel(demoLevel);
+
+// --- persistence: settings and the written record (sessions closed,
+// best revelation stage) live in localStorage; the core restores both
+// through its bridges at boot. A session itself is one sitting. ---
+const LS_KEY = "redlight-save-v1";
+let save = { paceQuick: false, textLarge: false, sessions: 0, bestStage: 0 };
+try { save = { ...save, ...JSON.parse(localStorage.getItem(LS_KEY) ?? "{}") }; } catch { /* fresh save */ }
+game.applySettings(save.paceQuick, save.textLarge);
+game.applyArchive(save.sessions, save.bestStage);
+let lastSettingsBits = game.settingsBits();
+let lastScreen = game.screen();
+function persist() { try { localStorage.setItem(LS_KEY, JSON.stringify(save)); } catch { /* private mode */ } }
+function noteScreen() {
+  const s = game.screen();
+  const bits = game.settingsBits();
+  if (bits !== lastSettingsBits) {
+    lastSettingsBits = bits;
+    save.paceQuick = (bits & 1) !== 0;
+    save.textLarge = (bits & 2) !== 0;
+    persist();
+  }
+  if (s !== lastScreen) {
+    if (s === 6) {
+      save.sessions += 1;
+      save.bestStage = Math.max(save.bestStage, game.knownStage());
+      game.applyArchive(save.sessions, save.bestStage);
+      persist();
+      renderRecords();
+    }
+    lastScreen = s;
+  }
+}
+function renderRecords() {
+  const el = document.getElementById("records");
+  if (!el) return;
+  const stages = ["GLIMPSED", "SEEN", "KNOWN"];
+  el.textContent = save.sessions > 0
+    ? `The written record: ${save.sessions} sessions closed · best revelation ${stages[save.bestStage] ?? "GLIMPSED"}`
+    : "";
+}
+renderRecords();
+
+// --- input: pointer presses are taps AND confirms; keys map to the
+// same bitset. Arrows move menus and pick the audience. ---
+let pendingInput = 0;
+function press(bits) { pendingInput |= bits; ensureAudio(); }
+canvas.addEventListener("pointerdown", () => press(INPUT.tap | INPUT.confirm));
+addEventListener("keydown", (e) => {
+  if (e.repeat) return;
+  if (e.code === "Space") { press(INPUT.tap | INPUT.confirm); e.preventDefault(); }
+  else if (e.code === "Enter") press(INPUT.confirm);
+  else if (e.code === "ArrowUp") press(INPUT.up);
+  else if (e.code === "ArrowDown") press(INPUT.down);
+  else if (e.code === "ArrowLeft") press(INPUT.left);
+  else if (e.code === "ArrowRight") press(INPUT.right);
+  else if (e.code === "KeyP" || e.code === "Escape") press(INPUT.pause);
+  else if (e.code === "Backspace") press(INPUT.back);
+});
+
+// --- audio: generated WebAudio, created only after a user gesture, and
+// only ever in response to core events that input caused. ---
+let audio = null;
+function ensureAudio() {
+  if (audio) { if (audio.state === "suspended") audio.resume(); return; }
+  try {
+    audio = new (window.AudioContext || window.webkitAudioContext)();
+  } catch { audio = null; }
+}
+function tone(freq, dur, type = "sine", gain = 0.12, when = 0) {
+  if (!audio) return;
+  const t0 = audio.currentTime + when;
+  const osc = audio.createOscillator();
+  const g = audio.createGain();
+  osc.type = type; osc.frequency.value = freq;
+  g.gain.setValueAtTime(gain, t0);
+  g.gain.exponentialRampToValueAtTime(0.001, t0 + dur);
+  osc.connect(g).connect(audio.destination);
+  osc.start(t0); osc.stop(t0 + dur);
+}
+function sonify(eventCode) {
+  switch (eventCode) {
+    case 1: tone(660, 0.07, "sine", 0.1); break;                        // pose
+    case 2: tone(523, 0.09, "triangle", 0.1); tone(784, 0.12, "triangle", 0.1, 0.07); break; // applause + line
+    case 3: tone(1180, 0.05, "square", 0.06); break;                    // flash
+    case 4: tone(587, 0.12, "sine", 0.11); tone(880, 0.18, "sine", 0.11, 0.09); break; // compliment
+    case 5: tone(990, 0.1, "sine", 0.12); tone(1320, 0.16, "sine", 0.1, 0.08); break; // lens answer
+    case 6: tone(523, 0.16); tone(659, 0.16, "sine", 0.12, 0.12); tone(784, 0.34, "sine", 0.12, 0.24); break; // on record
+    case 7: tone(220, 0.3, "triangle", 0.1); tone(147, 0.45, "triangle", 0.1, 0.2); break; // dark room
+    case 8: tone(440, 0.05, "sine", 0.06); break;                       // menu move
+  }
+}
+
+// --- painting: the core's draw list, interpreted on canvas. ---
+function paint(frame) {
+  for (const op of frame.ops) {
+    const kind = op[0];
+    const ci = kind === "t" ? op[4] : op[op.length - 1];
+    ctx.fillStyle = frame.palette[ci] ?? "#ff2e88";
+    ctx.strokeStyle = ctx.fillStyle;
+    if (kind === "r") ctx.fillRect(op[1], op[2], op[3], op[4]);
+    else if (kind === "c") { ctx.beginPath(); ctx.arc(op[1], op[2], op[3], 0, 6.2832); ctx.fill(); }
+    else if (kind === "l") {
+      ctx.lineWidth = op[5]; ctx.beginPath(); ctx.moveTo(op[1], op[2]); ctx.lineTo(op[3], op[4]); ctx.stroke();
+    } else if (kind === "p") {
+      ctx.beginPath(); ctx.moveTo(op[1], op[2]); ctx.lineTo(op[3], op[4]); ctx.lineTo(op[5], op[6]);
+      ctx.closePath(); ctx.fill();
+    } else if (kind === "t") {
+      ctx.font = `${op[3]}px ui-monospace, Menlo, monospace`;
+      ctx.textBaseline = "top";
+      ctx.fillText(op[5], op[1], op[2]);
+    }
+  }
+}
+
+// --- fixed-step loop: 16 ms steps, paint the newest frame. ---
+let acc = 0;
+let last = performance.now();
+function loop(now) {
+  acc += Math.min(now - last, 250);
+  last = now;
+  let stepped = false;
+  while (acc >= 16) {
+    const bits = pendingInput;
+    pendingInput = 0;
+    game.step(bits);
+    const ev = game.event();
+    if (ev !== 0) sonify(ev);
+    acc -= 16;
+    stepped = true;
+  }
+  if (stepped) { noteScreen(); paint(game.frame()); }
+  requestAnimationFrame(loop);
+}
+requestAnimationFrame(loop);
+</script>
 </body>
 </html>

@@ -8,3 +8,9 @@
 *.csproj
 *.sln
 book/html/
+
+# Redlight v1.0 core projects are source, not Unity-generated
+!core/**/*.csproj
+core/**/bin/
+core/**/obj/
+.capture-frames/
