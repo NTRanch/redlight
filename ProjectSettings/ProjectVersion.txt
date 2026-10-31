@@ -1,0 +1,2 @@
+m_EditorVersion: 6000.0.0f1
+# PREFLIGHT-VERIFY: pin to the Unity editor installed on primo at this week's preflight; record the verified version in docs/BUILD.md.
