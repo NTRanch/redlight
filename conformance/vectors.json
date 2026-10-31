@@ -1,0 +1,7 @@
+{
+  "scenarios": [
+    {"name": "demo-level-1", "seed": 42, "level": 0, "demo": true, "mode": 0, "steps": 4000, "screen": 6, "attention": 888, "floor": 0, "events": 7, "distinct": 6, "lensHits": 4, "stage": 2, "checksum": 674067027},
+    {"name": "scripted-level-2", "seed": 7, "level": 1, "demo": false, "mode": 1, "steps": 3000, "screen": 3, "attention": 999, "floor": 100, "events": 9, "distinct": 7, "lensHits": 3, "stage": 2, "checksum": 3511967180},
+    {"name": "demo-level-3", "seed": 1234, "level": 2, "demo": true, "mode": 2, "steps": 5000, "screen": 6, "attention": 994, "floor": 350, "events": 16, "distinct": 12, "lensHits": 3, "stage": 2, "checksum": 3604409348}
+  ]
+}
