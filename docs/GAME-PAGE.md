@@ -14,7 +14,7 @@ All characters depicted are adults.
 
 ## A performance game where you pose for the camera, answer its flashes, and keep the audience's attention high enough to go on record.
 
-<p align="center"><a href="https://github.com/NTRanch/redlight">GitHub</a> · <a href="https://github.com/NTRanch/redlight/blob/main/LICENSE.md">License</a> · <a href="https://ntranch.itch.io">itch.io studio page</a></p>
+<p align="center"><a href="https://github.com/NTRanch/redlight">GitHub</a> · <a href="https://github.com/NTRanch/redlight/blob/main/LICENSE.md">License</a> · <a href="https://ntranch.itch.io">itch.io studio page</a> · <a href="https://github.com/NTRanch/redlight/releases/tag/v1.0.0">Release</a></p>
 
 ![Redlight header](../assets/brand/header.png)
 
